@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: html-demo
+
+spec:
+  selector:
+    app: html-demo
+
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+
+  type: ClusterIP
+
+# The Service finds Pods with:
+
+# app: html-demo
+
+# and sends traffic to port 80.

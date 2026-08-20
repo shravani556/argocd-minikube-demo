@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: html-demo
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: html-demo
+
+  template:
+    metadata:
+      labels:
+        app: html-demo
+
+    spec:
+      containers:
+        - name: html-app
+          image: html-gitops:v1
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+
+
+
+# Deployment name → html-demo
+# Pod label       → app: html-demo
+# Container       → html-app
+# Image            → html-gitops:v1

@@ -1,0 +1,22 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+
+metadata:
+  name: html-app
+  namespace: argocd
+
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/shravani556/argocd-minikube-demo.git
+    targetRevision: main
+    path: html
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: html-demo
+
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
