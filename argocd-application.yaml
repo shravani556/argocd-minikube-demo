@@ -9,12 +9,12 @@ spec:
   project: default
 
   source:
-    repoURL: https://github.com/shravani556/argocd-minikube-demo.git
+    repoURL: https://github.com/shravani556/argocd-minikube-demo.git 
     targetRevision: main
     path: k8s
 
   destination:
-    server: https://kubernetes.default.svc
+    server: https://kubernetes.default.svc 
     namespace: gitops-demo
 
   syncPolicy:
