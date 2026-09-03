@@ -19,7 +19,8 @@ spec:
     spec:
       containers:
         - name: html-app
-          image: nexus.company.com/html-gitops:1.0.3
+          image: html-gitops:1.0.3
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 80
           resources:
