@@ -2,7 +2,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 
 metadata:
-  name: gitops-demo
+  name: gitops-app
   namespace: argocd
 
 spec:
