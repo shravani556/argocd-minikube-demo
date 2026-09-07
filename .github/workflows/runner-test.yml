@@ -1,0 +1,30 @@
+name: Self Hosted Runner Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-runner:
+    runs-on: self-hosted
+
+    steps:
+      - name: Test PowerShell
+        shell: powershell
+        run: |
+          Write-Host "Hello from my Windows self-hosted runner"
+          Write-Host "Computer: $env:COMPUTERNAME"
+
+      - name: Test Docker
+        shell: powershell
+        run: |
+          docker --version
+
+      - name: Test Kubernetes
+        shell: powershell
+        run: |
+          kubectl version --client
+
+      - name: Test Minikube
+        shell: powershell
+        run: |
+          minikube version
