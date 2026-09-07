@@ -1,30 +1,35 @@
-name: Self Hosted Runner Test
+name: Vault Authentication Test
 
 on:
   workflow_dispatch:
 
 jobs:
-  test-runner:
+  test-vault:
     runs-on: self-hosted
 
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
-      - name: Test PowerShell
-        shell: powershell
-        run: |
-          Write-Host "Hello from my Windows self-hosted runner"
-          Write-Host "Computer: $env:COMPUTERNAME"
+      - name: Authenticate to Vault and read Nexus credentials
+        uses: hashicorp/vault-action@v3
+        with:
+          method: jwt
+          url: http://127.0.0.1:8201
+          role: github-html-ci
+          secrets: |
+            secret/data/ci/nexus username | NEXUS_USERNAME ;
+            secret/data/ci/nexus password | NEXUS_PASSWORD
 
-      - name: Test Docker
+      - name: Verify Vault authentication
         shell: powershell
         run: |
-          docker --version
+          Write-Host "Vault authentication successful"
+          Write-Host "Nexus username received: $env:NEXUS_USERNAME"
 
-      - name: Test Kubernetes
-        shell: powershell
-        run: |
-          kubectl version --client
+          if ([string]::IsNullOrWhiteSpace($env:NEXUS_PASSWORD)) {
+            throw "Nexus password was not retrieved"
+          }
 
-      - name: Test Minikube
-        shell: powershell
-        run: |
-          minikube version
+          Write-Host "Nexus password was retrieved successfully"
