@@ -1,51 +1,22 @@
-name: HTML App CI
+name: Vault Nexus Login Diagnostic
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "html-app/**"
-
   workflow_dispatch:
 
 jobs:
-  build-push-update:
+  diagnose:
     runs-on: self-hosted
 
     permissions:
-      contents: write
+      contents: read
       id-token: write
-
-    env:
-      NEXUS_HOST: localhost:8081
-      NEXUS_REPOSITORY: docker-hosted
-      IMAGE_NAME: html-gitops
 
     steps:
 
-      # ---------------------------------------------------------
-      # 1. Get the source code
-      # ---------------------------------------------------------
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      # ---------------------------------------------------------
-      # 2. Create a unique image version
-      # ---------------------------------------------------------
-      - name: Generate image version
-        shell: powershell
-        run: |
-          $version = "1.0.${{ github.run_number }}"
-
-          "IMAGE_VERSION=$version" >> $env:GITHUB_ENV
-
-          Write-Host "Image version: $version"
-
-      # ---------------------------------------------------------
-      # 3. Authenticate GitHub Actions to Vault using OIDC
-      # ---------------------------------------------------------
-      - name: Get Nexus credentials from Vault
+      # =========================================================
+      # 1. Authenticate GitHub Actions to Vault using OIDC
+      # =========================================================
+      - name: Authenticate to Vault and get Nexus credentials
         uses: hashicorp/vault-action@v4
         with:
           method: jwt
@@ -57,115 +28,233 @@ jobs:
             secret/data/ci/nexus username | NEXUS_USERNAME ;
             secret/data/ci/nexus password | NEXUS_PASSWORD
 
-      # ---------------------------------------------------------
-      # 4. Confirm secrets arrived
-      # ---------------------------------------------------------
-      - name: Verify Vault secrets
+      # =========================================================
+      # 2. Verify Vault returned credentials
+      # =========================================================
+      - name: Verify Vault credentials
         shell: powershell
         run: |
+          Write-Host "======================================"
+          Write-Host "VAULT CHECK"
+          Write-Host "======================================"
+
           if ([string]::IsNullOrWhiteSpace($env:NEXUS_USERNAME)) {
-            throw "NEXUS_USERNAME was not retrieved from Vault"
+            throw "NEXUS_USERNAME is empty"
           }
 
           if ([string]::IsNullOrWhiteSpace($env:NEXUS_PASSWORD)) {
-            throw "NEXUS_PASSWORD was not retrieved from Vault"
+            throw "NEXUS_PASSWORD is empty"
           }
 
-          Write-Host "Vault authentication successful"
-          Write-Host "Nexus username received: $env:NEXUS_USERNAME"
-          Write-Host "Nexus password received successfully"
+          Write-Host "Username received: [$env:NEXUS_USERNAME]"
+          Write-Host "Password length: $($env:NEXUS_PASSWORD.Length)"
+          Write-Host "Vault credentials retrieved successfully"
 
-      # ---------------------------------------------------------
-      # 5. Login to Nexus Docker registry
-      # ---------------------------------------------------------
-      - name: Login to Nexus
+      # =========================================================
+      # 3. Identify the Windows account running the runner
+      # =========================================================
+      - name: Check runner identity
         shell: powershell
         run: |
-          $env:NEXUS_PASSWORD | docker login $env:NEXUS_HOST `
-            --username $env:NEXUS_USERNAME `
-            --password-stdin
+          Write-Host "======================================"
+          Write-Host "RUNNER IDENTITY"
+          Write-Host "======================================"
 
-      # ---------------------------------------------------------
-      # 6. Build Docker image
-      # ---------------------------------------------------------
-      - name: Build Docker image
+          Write-Host "whoami:"
+          whoami
+
+          Write-Host ""
+          Write-Host "COMPUTERNAME:"
+          Write-Host $env:COMPUTERNAME
+
+          Write-Host ""
+          Write-Host "USERNAME:"
+          Write-Host $env:USERNAME
+
+          Write-Host ""
+          Write-Host "USERPROFILE:"
+          Write-Host $env:USERPROFILE
+
+      # =========================================================
+      # 4. Check Docker environment
+      # =========================================================
+      - name: Check Docker environment
         shell: powershell
         run: |
-          $image = "$env:NEXUS_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
+          Write-Host "======================================"
+          Write-Host "DOCKER ENVIRONMENT"
+          Write-Host "======================================"
 
-          Write-Host "Building image:"
-          Write-Host $image
+          Write-Host "Docker context:"
+          docker context show
 
-          docker build `
-            -t $image `
-            .\html-app
+          Write-Host ""
+          Write-Host "Docker version:"
+          docker version
 
-      # ---------------------------------------------------------
-      # 7. Push image to Nexus
-      # ---------------------------------------------------------
-      - name: Push Docker image
-        shell: powershell
-        run: |
-          $image = "$env:NEXUS_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
-
-          Write-Host "Pushing image:"
-          Write-Host $image
-
-          docker push $image
-
-      # ---------------------------------------------------------
-      # 8. Update Kubernetes deployment.yaml
-      # ---------------------------------------------------------
-      - name: Update Kubernetes image
-        shell: powershell
-        run: |
-          $file = "html/deployment.yaml"
-
-          if (-not (Test-Path $file)) {
-            throw "$file was not found"
+          Write-Host ""
+          Write-Host "DOCKER_HOST:"
+          if ($env:DOCKER_HOST) {
+            Write-Host $env:DOCKER_HOST
+          }
+          else {
+            Write-Host "DOCKER_HOST is not set"
           }
 
-          $content = Get-Content $file -Raw
-
-          $newImage = "$env:NEXUS_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
-
-          $updated = $content -replace `
-            'image:\s*.*html-gitops:[^\s]+', `
-            "image: $newImage"
-
-          if ($updated -eq $content) {
-            throw "Could not find existing html-gitops image in $file"
+          Write-Host ""
+          Write-Host "DOCKER_CONFIG:"
+          if ($env:DOCKER_CONFIG) {
+            Write-Host $env:DOCKER_CONFIG
+          }
+          else {
+            Write-Host "DOCKER_CONFIG is not set"
           }
 
-          Set-Content -Path $file -Value $updated
-
-          Write-Host "Updated deployment.yaml:"
-          Get-Content $file
-
-      # ---------------------------------------------------------
-      # 9. Commit the manifest change
-      # ---------------------------------------------------------
-      - name: Commit deployment update
+      # =========================================================
+      # 5. Check Nexus TCP connectivity
+      # =========================================================
+      - name: Check Nexus TCP connectivity
         shell: powershell
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          Write-Host "======================================"
+          Write-Host "NEXUS CONNECTIVITY"
+          Write-Host "======================================"
 
-          git add html/deployment.yaml
+          $result = Test-NetConnection `
+            -ComputerName 127.0.0.1 `
+            -Port 8081 `
+            -WarningAction SilentlyContinue
 
-          git diff --cached --quiet
+          Write-Host "ComputerName: $($result.ComputerName)"
+          Write-Host "RemotePort: $($result.RemotePort)"
+          Write-Host "TcpTestSucceeded: $($result.TcpTestSucceeded)"
 
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "No deployment change detected"
-            exit 0
+          if (-not $result.TcpTestSucceeded) {
+            throw "Cannot connect to Nexus on 127.0.0.1:8081"
           }
 
-          git commit -m "Update html-app image to $env:IMAGE_VERSION"
-
-      # ---------------------------------------------------------
-      # 10. Push manifest back to GitHub
-      # ---------------------------------------------------------
-      - name: Push deployment update
+      # =========================================================
+      # 6. Check Nexus Docker endpoint
+      # =========================================================
+      - name: Check Nexus Docker endpoint
         shell: powershell
         run: |
-          git push origin HEAD:main
+          Write-Host "======================================"
+          Write-Host "NEXUS DOCKER ENDPOINT"
+          Write-Host "======================================"
+
+          try {
+            $response = Invoke-WebRequest `
+              -Uri "http://127.0.0.1:8081/v2/" `
+              -UseBasicParsing `
+              -ErrorAction Stop
+
+            Write-Host "HTTP status: $($response.StatusCode)"
+            Write-Host "Nexus Docker endpoint responded successfully"
+          }
+          catch {
+            Write-Host "Nexus endpoint response:"
+            Write-Host $_.Exception.Message
+
+            if ($_.Exception.Response) {
+              Write-Host ""
+              Write-Host "HTTP status:"
+              Write-Host ([int]$_.Exception.Response.StatusCode)
+            }
+
+            Write-Host ""
+            Write-Host "A 401/403 response from /v2/ can be normal before authentication."
+          }
+
+      # =========================================================
+      # 7. Check password formatting without exposing it
+      # =========================================================
+      - name: Check credential formatting
+        shell: powershell
+        run: |
+          Write-Host "======================================"
+          Write-Host "CREDENTIAL FORMAT CHECK"
+          Write-Host "======================================"
+
+          $passwordLength = $env:NEXUS_PASSWORD.Length
+          $trimmedLength = $env:NEXUS_PASSWORD.Trim().Length
+
+          Write-Host "Username length: $($env:NEXUS_USERNAME.Length)"
+          Write-Host "Password length: $passwordLength"
+          Write-Host "Trimmed password length: $trimmedLength"
+
+          if ($passwordLength -ne $trimmedLength) {
+            Write-Host "WARNING: password contains leading or trailing whitespace"
+          }
+          else {
+            Write-Host "No leading/trailing password whitespace detected"
+          }
+
+      # =========================================================
+      # 8. TEST NEXUS LOGIN
+      #
+      # Instead of PowerShell piping directly into docker.exe,
+      # write the password to a temporary file and use cmd.exe
+      # stdin redirection.
+      # =========================================================
+      - name: Test Nexus Docker login
+        shell: powershell
+        run: |
+          Write-Host "======================================"
+          Write-Host "DOCKER LOGIN TEST"
+          Write-Host "======================================"
+
+          $passwordFile = Join-Path $env:RUNNER_TEMP "nexus-password.txt"
+
+          try {
+
+            # Write password without adding a newline.
+            [System.IO.File]::WriteAllText(
+              $passwordFile,
+              $env:NEXUS_PASSWORD
+            )
+
+            Write-Host "Registry: 127.0.0.1:8081"
+            Write-Host "Username: [$env:NEXUS_USERNAME]"
+            Write-Host "Password length: $($env:NEXUS_PASSWORD.Length)"
+
+            # Use cmd.exe so stdin is redirected directly to docker.exe.
+            $username = $env:NEXUS_USERNAME
+
+            cmd.exe /c "docker login 127.0.0.1:8081 --username `"$username`" --password-stdin < `"$passwordFile`""
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "Docker login to Nexus failed"
+            }
+
+            Write-Host ""
+            Write-Host "Docker login to Nexus succeeded."
+
+          }
+          finally {
+
+            if (Test-Path $passwordFile) {
+              Remove-Item $passwordFile -Force
+            }
+
+          }
+
+      # =========================================================
+      # 9. Final result
+      # =========================================================
+      - name: Final verification
+        shell: powershell
+        run: |
+          Write-Host "======================================"
+          Write-Host "FINAL RESULT"
+          Write-Host "======================================"
+
+          Write-Host "Docker context:"
+          docker context show
+
+          Write-Host ""
+          Write-Host "Docker server:"
+          docker version --format "Server={{.Server.Version}}"
+
+          Write-Host ""
+          Write-Host "SUCCESS: GitHub Actions authenticated to Nexus."
