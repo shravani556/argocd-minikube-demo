@@ -1,35 +1,171 @@
-name: Vault Authentication Test
+name: HTML App CI
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "html-app/**"
+
   workflow_dispatch:
 
 jobs:
-  test-vault:
+  build-push-update:
     runs-on: self-hosted
 
     permissions:
-      contents: read
+      contents: write
       id-token: write
 
+    env:
+      NEXUS_HOST: localhost:8081
+      NEXUS_REPOSITORY: docker-hosted
+      IMAGE_NAME: html-gitops
+
     steps:
-      - name: Authenticate to Vault and read Nexus credentials
-        uses: hashicorp/vault-action@v3
+
+      # ---------------------------------------------------------
+      # 1. Get the source code
+      # ---------------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ---------------------------------------------------------
+      # 2. Create a unique image version
+      # ---------------------------------------------------------
+      - name: Generate image version
+        shell: powershell
+        run: |
+          $version = "1.0.${{ github.run_number }}"
+
+          "IMAGE_VERSION=$version" >> $env:GITHUB_ENV
+
+          Write-Host "Image version: $version"
+
+      # ---------------------------------------------------------
+      # 3. Authenticate GitHub Actions to Vault using OIDC
+      # ---------------------------------------------------------
+      - name: Get Nexus credentials from Vault
+        uses: hashicorp/vault-action@v4
         with:
           method: jwt
           url: http://127.0.0.1:8201
           role: github-html-ci
+          jwtGithubAudience: https://github.com/shravani556
+
           secrets: |
             secret/data/ci/nexus username | NEXUS_USERNAME ;
             secret/data/ci/nexus password | NEXUS_PASSWORD
 
-      - name: Verify Vault authentication
+      # ---------------------------------------------------------
+      # 4. Confirm secrets arrived
+      # ---------------------------------------------------------
+      - name: Verify Vault secrets
         shell: powershell
         run: |
-          Write-Host "Vault authentication successful"
-          Write-Host "Nexus username received: $env:NEXUS_USERNAME"
-
-          if ([string]::IsNullOrWhiteSpace($env:NEXUS_PASSWORD)) {
-            throw "Nexus password was not retrieved"
+          if ([string]::IsNullOrWhiteSpace($env:NEXUS_USERNAME)) {
+            throw "NEXUS_USERNAME was not retrieved from Vault"
           }
 
-          Write-Host "Nexus password was retrieved successfully"
+          if ([string]::IsNullOrWhiteSpace($env:NEXUS_PASSWORD)) {
+            throw "NEXUS_PASSWORD was not retrieved from Vault"
+          }
+
+          Write-Host "Vault authentication successful"
+          Write-Host "Nexus username received: $env:NEXUS_USERNAME"
+          Write-Host "Nexus password received successfully"
+
+      # ---------------------------------------------------------
+      # 5. Login to Nexus Docker registry
+      # ---------------------------------------------------------
+      - name: Login to Nexus
+        shell: powershell
+        run: |
+          $env:NEXUS_PASSWORD | docker login $env:NEXUS_HOST `
+            --username $env:NEXUS_USERNAME `
+            --password-stdin
+
+      # ---------------------------------------------------------
+      # 6. Build Docker image
+      # ---------------------------------------------------------
+      - name: Build Docker image
+        shell: powershell
+        run: |
+          $image = "$env:NEXUS_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
+
+          Write-Host "Building image:"
+          Write-Host $image
+
+          docker build `
+            -t $image `
+            .\html-app
+
+      # ---------------------------------------------------------
+      # 7. Push image to Nexus
+      # ---------------------------------------------------------
+      - name: Push Docker image
+        shell: powershell
+        run: |
+          $image = "$env:NEXUS_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
+
+          Write-Host "Pushing image:"
+          Write-Host $image
+
+          docker push $image
+
+      # ---------------------------------------------------------
+      # 8. Update Kubernetes deployment.yaml
+      # ---------------------------------------------------------
+      - name: Update Kubernetes image
+        shell: powershell
+        run: |
+          $file = "html/deployment.yaml"
+
+          if (-not (Test-Path $file)) {
+            throw "$file was not found"
+          }
+
+          $content = Get-Content $file -Raw
+
+          $newImage = "$env:NEXUS_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
+
+          $updated = $content -replace `
+            'image:\s*.*html-gitops:[^\s]+', `
+            "image: $newImage"
+
+          if ($updated -eq $content) {
+            throw "Could not find existing html-gitops image in $file"
+          }
+
+          Set-Content -Path $file -Value $updated
+
+          Write-Host "Updated deployment.yaml:"
+          Get-Content $file
+
+      # ---------------------------------------------------------
+      # 9. Commit the manifest change
+      # ---------------------------------------------------------
+      - name: Commit deployment update
+        shell: powershell
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add html/deployment.yaml
+
+          git diff --cached --quiet
+
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "No deployment change detected"
+            exit 0
+          }
+
+          git commit -m "Update html-app image to $env:IMAGE_VERSION"
+
+      # ---------------------------------------------------------
+      # 10. Push manifest back to GitHub
+      # ---------------------------------------------------------
+      - name: Push deployment update
+        shell: powershell
+        run: |
+          git push origin HEAD:main
