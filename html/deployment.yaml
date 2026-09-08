@@ -17,23 +17,29 @@ spec:
         app: html-demo
 
     spec:
+      # Kubernetes uses this secret to authenticate
+      # when pulling the private Docker image from Nexus.
+      imagePullSecrets:
+        - name: nexus-registry
+
       containers:
         - name: html-app
-          image: html-gitops:1.0.3
+
+          # CI will automatically update this image version.
+          image: 192.168.49.1:8081/docker-hosted/html-gitops:1.0.8
+
+          # Pull from the registry when the image is not
+          # already available locally.
           imagePullPolicy: IfNotPresent
+
           ports:
             - containerPort: 80
+
           resources:
             requests:
               cpu: 50m
               memory: 32Mi
+
             limits:
               cpu: 200m
               memory: 128Mi
-
-
-
-# Deployment name → html-demo
-# Pod label       → app: html-demo
-# Container       → html-app
-# Image            → html-gitops:v1
