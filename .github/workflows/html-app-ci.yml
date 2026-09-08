@@ -18,7 +18,7 @@ jobs:
       id-token: write
 
     env:
-      NEXUS_HOST: 127.0.0.1:8081
+      NEXUS_HOST: 192.168.49.1:8081
       NEXUS_REPOSITORY: docker-hosted
       IMAGE_NAME: html-gitops
 
