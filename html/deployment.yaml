@@ -1,4 +1,4 @@
-apiVersion: apps/v1
+﻿apiVersion: apps/v1
 kind: Deployment
 
 metadata:
@@ -26,7 +26,7 @@ spec:
         - name: html-app
 
           # CI will automatically update this image version.
-          image: 192.168.49.1:8081/docker-hosted/html-gitops:1.0.8
+          image: 192.168.49.1:8081/docker-hosted/html-gitops:1.0.9
 
           # Pull from the registry when the image is not
           # already available locally.
