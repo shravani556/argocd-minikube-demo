@@ -18,17 +18,29 @@ jobs:
       id-token: write
 
     env:
-      NEXUS_HOST: 192.168.49.1:8081
+      # Nexus address used by Docker on the Windows runner
+      NEXUS_PUSH_HOST: localhost:8081
+
+      # Nexus address reachable from Minikube
+      NEXUS_IMAGE_HOST: 192.168.49.1:8081
+
+      # Nexus hosted repository
       NEXUS_REPOSITORY: docker-hosted
+
+      # Docker image name
       IMAGE_NAME: html-gitops
 
     steps:
 
+      # =========================================================
       # 1. Checkout repository
+      # =========================================================
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Generate image version
+      # =========================================================
+      # 2. Generate immutable image version
+      # =========================================================
       - name: Generate image version
         shell: powershell
         run: |
@@ -36,9 +48,14 @@ jobs:
 
           "IMAGE_VERSION=$version" >> $env:GITHUB_ENV
 
-          Write-Host "New image version: $version"
+          Write-Host "======================================"
+          Write-Host "IMAGE VERSION"
+          Write-Host "======================================"
+          Write-Host $version
 
-      # 3. GitHub OIDC -> Vault
+      # =========================================================
+      # 3. Authenticate GitHub Actions to Vault using OIDC
+      # =========================================================
       - name: Get Nexus credentials from Vault
         uses: hashicorp/vault-action@v4
         with:
@@ -51,10 +68,16 @@ jobs:
             secret/data/ci/nexus username | NEXUS_USERNAME ;
             secret/data/ci/nexus password | NEXUS_PASSWORD
 
-      # 4. Verify Vault
+      # =========================================================
+      # 4. Verify Vault secrets
+      # =========================================================
       - name: Verify Vault secrets
         shell: powershell
         run: |
+          Write-Host "======================================"
+          Write-Host "VAULT CHECK"
+          Write-Host "======================================"
+
           if ([string]::IsNullOrWhiteSpace($env:NEXUS_USERNAME)) {
             throw "NEXUS_USERNAME was not retrieved from Vault"
           }
@@ -64,12 +87,24 @@ jobs:
           }
 
           Write-Host "Vault authentication successful"
-          Write-Host "Nexus credentials retrieved successfully"
+          Write-Host "Nexus username retrieved: $env:NEXUS_USERNAME"
+          Write-Host "Nexus password retrieved successfully"
+          Write-Host "Password length: $($env:NEXUS_PASSWORD.Length)"
 
-      # 5. Working Windows Nexus login method
+      # =========================================================
+      # 5. Login to Nexus
+      #
+      # Important:
+      # PowerShell -> docker.exe stdin caused problems earlier.
+      # We therefore use a temporary file + cmd.exe redirection.
+      # =========================================================
       - name: Login to Nexus
         shell: powershell
         run: |
+          Write-Host "======================================"
+          Write-Host "NEXUS LOGIN"
+          Write-Host "======================================"
+
           $passwordFile = Join-Path $env:RUNNER_TEMP "nexus-password.txt"
 
           try {
@@ -81,7 +116,7 @@ jobs:
 
             $username = $env:NEXUS_USERNAME
 
-            cmd.exe /c "docker login $env:NEXUS_HOST --username `"$username`" --password-stdin < `"$passwordFile`""
+            cmd.exe /c "docker login $env:NEXUS_PUSH_HOST --username `"$username`" --password-stdin < `"$passwordFile`""
 
             if ($LASTEXITCODE -ne 0) {
               throw "Docker login to Nexus failed"
@@ -98,26 +133,44 @@ jobs:
 
           }
 
-      # 6. Build image
+      # =========================================================
+      # 6. Build Docker image
+      # =========================================================
       - name: Build Docker image
         shell: powershell
         run: |
-          $image = "$env:NEXUS_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
+          Write-Host "======================================"
+          Write-Host "DOCKER BUILD"
+          Write-Host "======================================"
 
-          Write-Host "Building image:"
+          $image = "$env:NEXUS_PUSH_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
+
+          Write-Host "Building:"
           Write-Host $image
 
           docker build `
             -t $image `
             .\html-app
 
+          if ($LASTEXITCODE -ne 0) {
+            throw "Docker build failed"
+          }
+
+          Write-Host "Docker build succeeded."
+
+      # =========================================================
       # 7. Push image to Nexus
+      # =========================================================
       - name: Push Docker image
         shell: powershell
         run: |
-          $image = "$env:NEXUS_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
+          Write-Host "======================================"
+          Write-Host "NEXUS PUSH"
+          Write-Host "======================================"
 
-          Write-Host "Pushing image:"
+          $image = "$env:NEXUS_PUSH_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
+
+          Write-Host "Pushing:"
           Write-Host $image
 
           docker push $image
@@ -128,22 +181,32 @@ jobs:
 
           Write-Host "Docker image pushed successfully."
 
-      # 8. Automatically update deployment.yaml
+      # =========================================================
+      # 8. Update Kubernetes deployment.yaml
+      #
+      # IMPORTANT:
+      # Kubernetes/Minikube must use the address reachable
+      # from Minikube, not localhost.
+      # =========================================================
       - name: Update Kubernetes image
         shell: powershell
         run: |
+          Write-Host "======================================"
+          Write-Host "UPDATE KUBERNETES MANIFEST"
+          Write-Host "======================================"
+
           $file = "html/deployment.yaml"
 
           if (-not (Test-Path $file)) {
             throw "$file was not found"
           }
 
-          $newImage = "$env:NEXUS_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
-
-          Write-Host "New desired image:"
-          Write-Host $newImage
-
           $content = Get-Content $file -Raw
+
+          $newImage = "$env:NEXUS_IMAGE_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
+
+          Write-Host "New Kubernetes image:"
+          Write-Host $newImage
 
           $updated = $content -replace `
             'image:\s*.*html-gitops:[^\s]+', `
@@ -153,16 +216,25 @@ jobs:
             throw "Could not find existing html-gitops image in deployment.yaml"
           }
 
-          Set-Content -Path $file -Value $updated
+          Set-Content `
+            -Path $file `
+            -Value $updated `
+            -Encoding utf8
 
           Write-Host ""
           Write-Host "Updated deployment.yaml:"
           Get-Content $file
 
-      # 9. Commit manifest
+      # =========================================================
+      # 9. Commit deployment manifest
+      # =========================================================
       - name: Commit deployment update
         shell: powershell
         run: |
+          Write-Host "======================================"
+          Write-Host "GIT COMMIT"
+          Write-Host "======================================"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -178,10 +250,20 @@ jobs:
           git commit `
             -m "Update html-app image to $env:IMAGE_VERSION"
 
-      # 10. Push manifest
+          if ($LASTEXITCODE -ne 0) {
+            throw "Git commit failed"
+          }
+
+      # =========================================================
+      # 10. Push updated manifest to GitHub
+      # =========================================================
       - name: Push deployment update
         shell: powershell
         run: |
+          Write-Host "======================================"
+          Write-Host "GIT PUSH"
+          Write-Host "======================================"
+
           git push origin HEAD:main
 
           if ($LASTEXITCODE -ne 0) {
@@ -190,20 +272,26 @@ jobs:
 
           Write-Host "Deployment manifest pushed to GitHub."
 
-      # 11. Summary
-      - name: Deployment summary
+      # =========================================================
+      # 11. Final summary
+      # =========================================================
+      - name: CI summary
         shell: powershell
         run: |
           Write-Host "======================================"
           Write-Host "HTML CI COMPLETED"
           Write-Host "======================================"
 
-          Write-Host "Image:"
-          Write-Host "$env:NEXUS_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
+          Write-Host "Image pushed to Nexus:"
+          Write-Host "$env:NEXUS_PUSH_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
 
           Write-Host ""
-          Write-Host "Git manifest updated:"
+          Write-Host "Kubernetes image reference:"
+          Write-Host "$env:NEXUS_IMAGE_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
+
+          Write-Host ""
+          Write-Host "Git manifest:"
           Write-Host "html/deployment.yaml"
 
           Write-Host ""
-          Write-Host "Argo CD should now detect the Git change."
+          Write-Host "Argo CD automatic sync should now reconcile the Git change."
