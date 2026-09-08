@@ -1,0 +1,209 @@
+name: HTML App CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "html-app/**"
+
+  workflow_dispatch:
+
+jobs:
+  build-push-update:
+    runs-on: self-hosted
+
+    permissions:
+      contents: write
+      id-token: write
+
+    env:
+      NEXUS_HOST: 127.0.0.1:8081
+      NEXUS_REPOSITORY: docker-hosted
+      IMAGE_NAME: html-gitops
+
+    steps:
+
+      # 1. Checkout repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Generate image version
+      - name: Generate image version
+        shell: powershell
+        run: |
+          $version = "1.0.${{ github.run_number }}"
+
+          "IMAGE_VERSION=$version" >> $env:GITHUB_ENV
+
+          Write-Host "New image version: $version"
+
+      # 3. GitHub OIDC -> Vault
+      - name: Get Nexus credentials from Vault
+        uses: hashicorp/vault-action@v4
+        with:
+          method: jwt
+          url: http://127.0.0.1:8201
+          role: github-html-ci
+          jwtGithubAudience: https://github.com/shravani556
+
+          secrets: |
+            secret/data/ci/nexus username | NEXUS_USERNAME ;
+            secret/data/ci/nexus password | NEXUS_PASSWORD
+
+      # 4. Verify Vault
+      - name: Verify Vault secrets
+        shell: powershell
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:NEXUS_USERNAME)) {
+            throw "NEXUS_USERNAME was not retrieved from Vault"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:NEXUS_PASSWORD)) {
+            throw "NEXUS_PASSWORD was not retrieved from Vault"
+          }
+
+          Write-Host "Vault authentication successful"
+          Write-Host "Nexus credentials retrieved successfully"
+
+      # 5. Working Windows Nexus login method
+      - name: Login to Nexus
+        shell: powershell
+        run: |
+          $passwordFile = Join-Path $env:RUNNER_TEMP "nexus-password.txt"
+
+          try {
+
+            [System.IO.File]::WriteAllText(
+              $passwordFile,
+              $env:NEXUS_PASSWORD
+            )
+
+            $username = $env:NEXUS_USERNAME
+
+            cmd.exe /c "docker login $env:NEXUS_HOST --username `"$username`" --password-stdin < `"$passwordFile`""
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "Docker login to Nexus failed"
+            }
+
+            Write-Host "Docker login to Nexus succeeded."
+
+          }
+          finally {
+
+            if (Test-Path $passwordFile) {
+              Remove-Item $passwordFile -Force
+            }
+
+          }
+
+      # 6. Build image
+      - name: Build Docker image
+        shell: powershell
+        run: |
+          $image = "$env:NEXUS_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
+
+          Write-Host "Building image:"
+          Write-Host $image
+
+          docker build `
+            -t $image `
+            .\html-app
+
+      # 7. Push image to Nexus
+      - name: Push Docker image
+        shell: powershell
+        run: |
+          $image = "$env:NEXUS_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
+
+          Write-Host "Pushing image:"
+          Write-Host $image
+
+          docker push $image
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Docker push failed"
+          }
+
+          Write-Host "Docker image pushed successfully."
+
+      # 8. Automatically update deployment.yaml
+      - name: Update Kubernetes image
+        shell: powershell
+        run: |
+          $file = "html/deployment.yaml"
+
+          if (-not (Test-Path $file)) {
+            throw "$file was not found"
+          }
+
+          $newImage = "$env:NEXUS_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
+
+          Write-Host "New desired image:"
+          Write-Host $newImage
+
+          $content = Get-Content $file -Raw
+
+          $updated = $content -replace `
+            'image:\s*.*html-gitops:[^\s]+', `
+            "image: $newImage"
+
+          if ($updated -eq $content) {
+            throw "Could not find existing html-gitops image in deployment.yaml"
+          }
+
+          Set-Content -Path $file -Value $updated
+
+          Write-Host ""
+          Write-Host "Updated deployment.yaml:"
+          Get-Content $file
+
+      # 9. Commit manifest
+      - name: Commit deployment update
+        shell: powershell
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add html/deployment.yaml
+
+          git diff --cached --quiet
+
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "No deployment change detected."
+            exit 0
+          }
+
+          git commit `
+            -m "Update html-app image to $env:IMAGE_VERSION"
+
+      # 10. Push manifest
+      - name: Push deployment update
+        shell: powershell
+        run: |
+          git push origin HEAD:main
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Git push failed"
+          }
+
+          Write-Host "Deployment manifest pushed to GitHub."
+
+      # 11. Summary
+      - name: Deployment summary
+        shell: powershell
+        run: |
+          Write-Host "======================================"
+          Write-Host "HTML CI COMPLETED"
+          Write-Host "======================================"
+
+          Write-Host "Image:"
+          Write-Host "$env:NEXUS_HOST/$env:NEXUS_REPOSITORY/$env:IMAGE_NAME`:$env:IMAGE_VERSION"
+
+          Write-Host ""
+          Write-Host "Git manifest updated:"
+          Write-Host "html/deployment.yaml"
+
+          Write-Host ""
+          Write-Host "Argo CD should now detect the Git change."
